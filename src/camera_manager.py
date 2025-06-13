@@ -15,11 +15,25 @@ class CameraManager:
         self.frame_lock = threading.Lock()
         self.capture_thread = None
         
-    def start(self, camera_index: int = 0) -> bool:
-        """Start camera capture"""
+    def start(self, camera_index: int = None) -> bool:
+        """Start camera capture, auto-detecting if index not specified"""
+        if camera_index is not None:
+            return self._start_camera(camera_index)
+        
+        # Auto-detect working camera
+        return self._auto_detect_camera()
+    
+    def _start_camera(self, camera_index: int) -> bool:
+        """Start camera with specific index"""
         try:
             self.cap = cv2.VideoCapture(camera_index)
             if not self.cap.isOpened():
+                return False
+            
+            # Test if we can actually read a frame
+            ret, frame = self.cap.read()
+            if not ret or frame is None:
+                self.cap.release()
                 return False
                 
             # Set camera properties for better performance
@@ -31,12 +45,26 @@ class CameraManager:
             self.capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
             self.capture_thread.start()
             
-            print(f"Camera started on index {camera_index}")
+            print(f"✓ Camera started on index {camera_index}")
             return True
             
         except Exception as e:
-            print(f"Failed to start camera: {e}")
+            print(f"✗ Failed to start camera {camera_index}: {e}")
             return False
+    
+    def _auto_detect_camera(self) -> bool:
+        """Auto-detect working camera by trying multiple indices"""
+        print("Auto-detecting camera...")
+        
+        # Try common camera indices
+        for index in range(10):
+            print(f"  Trying camera index {index}...")
+            if self._start_camera(index):
+                return True
+            time.sleep(0.1)  # Brief pause between attempts
+        
+        print("✗ No working camera found")
+        return False
     
     def stop(self):
         """Stop camera capture"""
@@ -81,3 +109,24 @@ class CameraManager:
             'fps': int(self.cap.get(cv2.CAP_PROP_FPS)),
             'fourcc': int(self.cap.get(cv2.CAP_PROP_FOURCC))
         }
+    
+    @staticmethod
+    def list_available_cameras() -> list:
+        """List all available camera indices"""
+        available_cameras = []
+        
+        for index in range(10):
+            cap = cv2.VideoCapture(index)
+            if cap.isOpened():
+                # Test if we can read a frame
+                ret, frame = cap.read()
+                if ret and frame is not None:
+                    available_cameras.append({
+                        'index': index,
+                        'width': int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+                        'height': int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+                        'fps': int(cap.get(cv2.CAP_PROP_FPS))
+                    })
+                cap.release()
+            
+        return available_cameras

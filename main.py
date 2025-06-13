@@ -181,8 +181,17 @@ class FaceItAnalysisSystem:
         camera_frame = ttk.LabelFrame(general_frame, text="Camera", padding=10)
         camera_frame.pack(fill=tk.X, pady=10)
         
-        ttk.Label(camera_frame, text="Camera Index:").grid(row=0, column=0, sticky=tk.W)
+        ttk.Label(camera_frame, text="Camera Index (0=Auto):").grid(row=0, column=0, sticky=tk.W)
         ttk.Spinbox(camera_frame, from_=0, to=10, textvariable=self.settings['camera_index']).grid(row=0, column=1)
+        
+        # Add button to refresh available cameras
+        ttk.Button(camera_frame, text="Detect Cameras", 
+                  command=self.detect_cameras).grid(row=0, column=2, padx=(10, 0))
+        
+        # Camera info display
+        self.camera_info_label = ttk.Label(camera_frame, text="Click 'Detect Cameras' to scan", 
+                                          font=("Arial", 9), foreground="gray")
+        self.camera_info_label.grid(row=1, column=0, columnspan=3, sticky=tk.W, pady=(5, 0))
         
         # Analysis settings
         analysis_frame = ttk.LabelFrame(general_frame, text="Analysis", padding=10)
@@ -192,6 +201,27 @@ class FaceItAnalysisSystem:
                        variable=self.settings['enable_eye_tracking']).pack(anchor=tk.W)
         ttk.Checkbutton(analysis_frame, text="Enable Emotion Analysis", 
                        variable=self.settings['enable_emotion_analysis']).pack(anchor=tk.W)
+        
+    def detect_cameras(self):
+        """Detect and display available cameras"""
+        self.camera_info_label.config(text="Scanning cameras...")
+        
+        def scan():
+            try:
+                cameras = self.camera_manager.list_available_cameras()
+                if cameras:
+                    camera_text = "Available cameras: " + ", ".join([
+                        f"Index {cam['index']} ({cam['width']}x{cam['height']})"
+                        for cam in cameras
+                    ])
+                else:
+                    camera_text = "No cameras detected"
+                
+                self.camera_info_label.config(text=camera_text)
+            except Exception as e:
+                self.camera_info_label.config(text=f"Error scanning cameras: {e}")
+        
+        threading.Thread(target=scan, daemon=True).start()
         
     def calibrate_eye_tracking(self):
         """Calibrate the eye tracking system"""
@@ -204,13 +234,14 @@ class FaceItAnalysisSystem:
         
         def calibrate():
             try:
-                success = self.eye_tracker.calibrate(self.settings['camera_index'].get())
+                # Use auto-detection for calibration
+                success = self.eye_tracker.calibrate()
                 if success:
                     self.status_label.config(text="Status: Eye tracking calibrated ✓")
                     messagebox.showinfo("Success", "Eye tracking calibration completed!")
                 else:
                     self.status_label.config(text="Status: Calibration failed ✗")
-                    messagebox.showerror("Error", "Eye tracking calibration failed")
+                    messagebox.showerror("Error", "Eye tracking calibration failed. Check camera connection.")
             except Exception as e:
                 self.status_label.config(text="Status: Calibration error ✗")
                 messagebox.showerror("Error", f"Calibration error: {str(e)}")
@@ -222,9 +253,23 @@ class FaceItAnalysisSystem:
     def start_session(self):
         """Start a new analysis session"""
         try:
-            # Initialize camera
-            if not self.camera_manager.start(self.settings['camera_index'].get()):
-                messagebox.showerror("Error", "Failed to start camera")
+            # List available cameras first
+            available_cameras = self.camera_manager.list_available_cameras()
+            if not available_cameras:
+                messagebox.showerror("Error", "No cameras detected! Please check your camera connection.")
+                return
+                
+            print(f"Available cameras: {available_cameras}")
+            
+            # Initialize camera (auto-detect or use specified index)
+            camera_index = self.settings['camera_index'].get()
+            if camera_index == 0:  # Auto-detect
+                success = self.camera_manager.start()
+            else:
+                success = self.camera_manager.start(camera_index)
+                
+            if not success:
+                messagebox.showerror("Error", f"Failed to start camera. Available cameras: {[c['index'] for c in available_cameras]}")
                 return
             
             # Initialize analyzers
@@ -332,19 +377,29 @@ class FaceItAnalysisSystem:
         
         # Draw gaze point if available
         if gaze_point:
-            cv2.circle(display_frame, (int(gaze_point[0]), int(gaze_point[1])), 
-                      10, (0, 255, 0), 2)
+            # Scale gaze point to display size
+            scale_x = 640 / self.eye_tracker.screen_width
+            scale_y = 480 / self.eye_tracker.screen_height
+            display_x = int(gaze_point[0] * scale_x)
+            display_y = int(gaze_point[1] * scale_y)
+            cv2.circle(display_frame, (display_x, display_y), 10, (0, 255, 0), 2)
         
         # Convert to PhotoImage and display
         frame_rgb = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
-        photo = tk.PhotoImage(data=cv2.imencode('.ppm', frame_rgb)[1].tobytes())
+        # Convert to PIL Image for tkinter
+        from PIL import Image, ImageTk
+        pil_image = Image.fromarray(frame_rgb)
+        photo = ImageTk.PhotoImage(pil_image)
+        
+        # Clear canvas and add image
+        self.camera_canvas.delete("all")
         self.camera_canvas.create_image(320, 240, image=photo)
         self.camera_canvas.image = photo  # Keep a reference
         
     def update_emotion_display(self, emotions):
         """Update the emotion display"""
-        if emotions:
-            emotion_text = ", ".join([f"{k}: {v:.2f}" for k, v in emotions.items() if v > 0.1])
+        if emotions and 'emotions' in emotions:
+            emotion_text = ", ".join([f"{k}: {v:.2f}" for k, v in emotions['emotions'].items() if v > 0.1])
             self.emotion_label.config(text=f"Emotions: {emotion_text}")
         
     def update_gaze_display(self, gaze_point):
@@ -358,7 +413,7 @@ class FaceItAnalysisSystem:
         self.data_recorder.add_game_event(timestamp, event_type, event_data)
         
         # Update game score display
-        if event_type == 'score_update':
+        if event_type in ['score_update', 'flappy_bird_score_update']:
             self.game_score_label.config(text=f"Game Score: {event_data.get('score', 0)}")
             
     def show_results(self):
@@ -408,8 +463,19 @@ class FaceItAnalysisSystem:
             messagebox.showwarning("Warning", "No data to generate report")
             return
             
-        # TODO: Implement report generation
-        messagebox.showinfo("Info", "Report generation feature coming soon!")
+        try:
+            # Create results visualizer
+            results_viz = ResultsVisualizer(self.session_data)
+            
+            # Generate comprehensive report
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"faceit_report_{timestamp}.png"
+            
+            fig = results_viz.create_comprehensive_report(filename)
+            messagebox.showinfo("Success", f"Report generated: {filename}")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Report generation failed: {str(e)}")
         
     def run(self):
         """Start the application"""
@@ -431,14 +497,42 @@ def main():
     # Check dependencies
     try:
         import cv2
+        print("✓ OpenCV available")
+    except ImportError:
+        print("✗ Missing OpenCV")
+        
+    try:
         import feat
+        print("✓ py-feat available")
+    except ImportError:
+        print("⚠ py-feat not available (emotion analysis disabled)")
+        
+    try:
         import eyetrax
-        print("✓ All dependencies available")
-    except ImportError as e:
-        print(f"✗ Missing dependency: {e}")
-        print("Please install required packages:")
-        print("pip install opencv-python py-feat eyetrax matplotlib pandas")
+        print("✓ EyeTrax available")
+    except ImportError:
+        print("⚠ EyeTrax not available (eye tracking disabled)")
+        
+    try:
+        import matplotlib
+        print("✓ Matplotlib available")
+    except ImportError:
+        print("✗ Missing matplotlib")
+        
+    try:
+        import pandas
+        print("✓ Pandas available")
+    except ImportError:
+        print("✗ Missing pandas")
+        
+    try:
+        from PIL import Image, ImageTk
+        print("✓ PIL available")
+    except ImportError:
+        print("✗ Missing Pillow")
         return
+    
+    print("✓ Core dependencies available")
     
     # Create and run application
     app = FaceItAnalysisSystem()

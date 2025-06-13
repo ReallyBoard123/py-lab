@@ -37,7 +37,7 @@ class EyeTracker:
         """Check if EyeTrax is available"""
         return EYETRAX_AVAILABLE
     
-    def calibrate(self, camera_index: int = 0) -> bool:
+    def calibrate(self, camera_index: int = None) -> bool:
         """Calibrate the eye tracking system"""
         if not EYETRAX_AVAILABLE:
             print("EyeTrax not available for calibration")
@@ -45,6 +45,17 @@ class EyeTracker:
         
         try:
             print("Starting EyeTrax calibration...")
+            
+            # Auto-detect camera if not specified
+            if camera_index is None:
+                from .camera_manager import CameraManager
+                available_cameras = CameraManager.list_available_cameras()
+                if not available_cameras:
+                    print("✗ No cameras detected for calibration")
+                    return False
+                camera_index = available_cameras[0]['index']
+                print(f"Using camera index {camera_index}")
+            
             print("Follow the instructions in the calibration window")
             
             # Create gaze estimator
